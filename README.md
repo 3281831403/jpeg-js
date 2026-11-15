@@ -53,7 +53,7 @@ console.log(rawImageData);
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
 | `colorTransform`     | Transform alternate colorspaces like YCbCr. `undefined` means respect the default behavior encoded in metadata.                                                                                   | `undefined` |
 | `useTArray`          | Decode pixels into a typed `Uint8Array` instead of a `Buffer`.                                                                                                                                    | `false`     |
-| `formatAsRGBA`       | Decode pixels into RGBA vs. RGB.                                                                                                                                                                  | `true`      |
+| `formatAsRGBA`       | Decode pixels into RGBA (`true`) vs. the image's natural component count (`false`): one byte per pixel for grayscale, three for color.                                                              | `true`      |
 | `tolerantDecoding`   | Be more tolerant when encountering technically invalid JPEGs.                                                                                                                                     | `true`      |
 | `maxResolutionInMP`  | The maximum resolution image that `jpeg-js` should attempt to decode in megapixels. Images larger than this resolution will throw an error instead of decoding.                                   | `100`       |
 | `maxMemoryUsageInMB` | The (approximate) maximum memory that `jpeg-js` should allocate while attempting to decode the image in mebibyte. Images requiring more memory than this will throw an error instead of decoding. | `512`       |
@@ -87,6 +87,18 @@ console.log(jpegImageData);
 // write to file
 fs.writeFileSync('image.jpg', jpegImageData.data);
 ```
+
+The channel count passed to `encode` is inferred from the length of
+`imgData.data`:
+
+* `width * height` bytes — grayscale, encoded as a genuine one-component
+  JPEG.
+* `width * height * 3` bytes — RGB, encoded as a normal three-component
+  JPEG.
+* `width * height * 4` bytes — RGBA; alpha is ignored.
+
+Any other length throws. This makes a buffer returned by
+`decode(..., {formatAsRGBA: false})` safe to pass straight back to `encode`.
 
 ## License
 

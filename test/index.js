@@ -277,6 +277,107 @@ it('encodes/decode image with exif data', function () {
   expect(loopImageData.exifBuffer).toEqual(imageData.exifBuffer);
 });
 
+it('decodes a grayscale JPEG to a single channel when not formatting as RGBA', function () {
+  var jpegData = fixture('apsara.jpg');
+  var rawImageData = jpeg.decode(jpegData, {useTArray: true, formatAsRGBA: false});
+  expect(rawImageData.width).toEqual(580);
+  expect(rawImageData.height).toEqual(599);
+  expect(rawImageData.data.length).toEqual(580 * 599);
+});
+
+it('decodes a color JPEG to three channels when not formatting as RGBA', function () {
+  var jpegData = fixture('grumpycat.jpg');
+  var rawImageData = jpeg.decode(jpegData, {useTArray: true, formatAsRGBA: false});
+  expect(rawImageData.data.length).toEqual(320 * 180 * 3);
+});
+
+it('round-trips a three channel buffer through encode', function () {
+  var jpegData = fixture('grumpycat.jpg');
+  var rgbImageData = jpeg.decode(jpegData, {useTArray: true, formatAsRGBA: false});
+  var encoded = jpeg.encode({
+    data: rgbImageData.data,
+    width: rgbImageData.width,
+    height: rgbImageData.height,
+  }, 100);
+  var decoded = jpeg.decode(encoded.data);
+
+  // Encoding RGB and RGBA buffers with the same pixels must agree, since
+  // alpha is not part of a JPEG.
+  var rgba = Buffer.alloc(rgbImageData.width * rgbImageData.height * 4);
+  for (var i = 0; i < rgbImageData.width * rgbImageData.height; i++) {
+    rgba[i * 4] = rgbImageData.data[i * 3];
+    rgba[i * 4 + 1] = rgbImageData.data[i * 3 + 1];
+    rgba[i * 4 + 2] = rgbImageData.data[i * 3 + 2];
+    rgba[i * 4 + 3] = 255;
+  }
+  var encodedRGBA = jpeg.encode({
+    data: rgba,
+    width: rgbImageData.width,
+    height: rgbImageData.height,
+  }, 100);
+  expect(encoded.data).toEqual(encodedRGBA.data);
+
+  // And the round-trip must preserve the color reasonably well.
+  var totalDiff = 0;
+  for (var j = 0; j < rgbImageData.width * rgbImageData.height; j++) {
+    totalDiff += Math.abs(decoded.data[j * 4] - rgbImageData.data[j * 3]);
+    totalDiff += Math.abs(decoded.data[j * 4 + 1] - rgbImageData.data[j * 3 + 1]);
+    totalDiff += Math.abs(decoded.data[j * 4 + 2] - rgbImageData.data[j * 3 + 2]);
+  }
+  expect(totalDiff / (rgbImageData.width * rgbImageData.height * 3)).toBeLessThan(8);
+});
+
+it('encodes a grayscale buffer as a single component JPEG', function () {
+  var width = 64, height = 64;
+  var frameData = Buffer.alloc(width * height);
+  for (var y = 0; y < height; y++) {
+    for (var x = 0; x < width; x++) {
+      frameData[y * width + x] = Math.round((x + y) * 255 / 126);
+    }
+  }
+
+  var jpegImageData = jpeg.encode({data: frameData, width: width, height: height}, 100);
+
+  var rgbVersion = jpeg.encode({
+    data: (function () {
+      var rgb = Buffer.alloc(width * height * 3);
+      for (var i = 0; i < width * height; i++) {
+        rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = frameData[i];
+      }
+      return rgb;
+    })(),
+    width: width,
+    height: height,
+  }, 100);
+
+  // A true grayscale JPEG only carries one component, so it must not be
+  // larger than the RGB encoding of the very same pixels.
+  expect(jpegImageData.data.length).toBeLessThan(rgbVersion.data.length);
+
+  var decoded = jpeg.decode(jpegImageData.data);
+  var maxDiff = 0;
+  for (var i = 0; i < width * height; i++) {
+    expect(decoded.data[i * 4]).toEqual(decoded.data[i * 4 + 1]);
+    expect(decoded.data[i * 4]).toEqual(decoded.data[i * 4 + 2]);
+    maxDiff = Math.max(maxDiff, Math.abs(decoded.data[i * 4] - frameData[i]));
+  }
+  expect(maxDiff).toBeLessThanOrEqual(2);
+
+  // Decoding it back without RGBA formatting must return a single channel.
+  var plain = jpeg.decode(jpegImageData.data, {useTArray: true, formatAsRGBA: false});
+  expect(plain.data.length).toEqual(width * height);
+});
+
+it('rejects image data whose length does not match its dimensions', function () {
+  expect(function () {
+    jpeg.encode({data: Buffer.alloc(320 * 180 * 2), width: 320, height: 180}, 50);
+  }).toThrow(/Invalid image data length/);
+
+  expect(function () {
+    jpeg.encode({data: Buffer.alloc(320 * 180 * 3 + 1), width: 320, height: 180}, 50);
+  }).toThrow(/Invalid image data length/);
+});
+
 it('decodes image with ffdc marker', function () {
   var jpegData = fixture('marker-ffdc.jpg');
   var imageData = jpeg.decode(new Uint8Array(jpegData));
