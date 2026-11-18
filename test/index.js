@@ -314,3 +314,131 @@ it('errors out invalid sampling factors', function () {
   expect(() => jpeg.decode(Buffer.from('/9j/wfFR2AD/UdgA/9r/3g==', 'base64')).toThrow(
     'Invalid sampling factor, expected values above 0'))
 });
+
+// Locate the (marker, offset, segmentLength) triples of a JPEG so tests can
+// mutate specific segments in place. Entropy-coded data is skipped over.
+function findMarkers(buffer) {
+  const data = Buffer.from(buffer);
+  const markers = [];
+  let i = 2;
+  while (i < data.length - 1) {
+    if (data[i] !== 0xFF) { i++; continue; }
+    const marker = data[i + 1];
+    if (marker === 0x00 || marker === 0xFF) { i++; continue; }
+    if (marker >= 0xD0 && marker <= 0xD7) { i += 2; continue; }
+    if (marker === 0xD8 || marker === 0xD9) { markers.push([marker, i, 0]); i += 2; continue; }
+    const length = data.readUInt16BE(i + 2);
+    markers.push([marker, i, length]);
+    if (marker === 0xDA) {
+      let j = i + 2 + length;
+      while (j < data.length - 1) {
+        if (data[j] === 0xFF && data[j + 1] !== 0x00 &&
+            !(data[j + 1] >= 0xD0 && data[j + 1] <= 0xD7) && data[j + 1] !== 0xFF) {
+          break;
+        }
+        j++;
+      }
+      i = j;
+    } else {
+      i += 2 + length;
+    }
+  }
+  return markers;
+}
+
+// Assert that decoding always rejects with a plain Error (never a TypeError,
+// never a returned image) whose message names the expected segment.
+function expectStructuralError(buffer, expectedSegment) {
+  let threw = false;
+  try {
+    jpeg.decode(buffer, { useTArray: true });
+  } catch (err) {
+    threw = true;
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect(err.message).toContain(expectedSegment);
+  }
+  expect(threw).toBe(true);
+}
+
+it('decodes a 4:2:0 progressive JPEG with restart markers', function () {
+  var dri = jpeg.decode(fixture('prog-33x33-dri.jpg'));
+  expect(dri.width).toEqual(33);
+  expect(dri.height).toEqual(33);
+  var noDri = jpeg.decode(fixture('prog-33x33-nodri.jpg'));
+  expect(dri.data).toEqual(noDri.data);
+});
+
+it('decodes a progressive grayscale JPEG with restart markers identically without DRI', function () {
+  var dri = jpeg.decode(fixture('gray-33x33-dri.jpg'));
+  var noDri = jpeg.decode(fixture('gray-33x33-nodri.jpg'));
+  expect(dri.width).toEqual(33);
+  expect(dri.height).toEqual(33);
+  expect(dri.data).toEqual(noDri.data);
+});
+
+it('does not throw a TypeError on grayscale restart images in strict mode', function () {
+  var dri = jpeg.decode(fixture('gray-33x33-dri.jpg'), { tolerantDecoding: false });
+  var noDri = jpeg.decode(fixture('gray-33x33-nodri.jpg'), { tolerantDecoding: false });
+  expect(dri.data).toEqual(noDri.data);
+  // Color progressive with RST must also survive strict decoding.
+  var color = jpeg.decode(fixture('prog-33x33-dri.jpg'), { tolerantDecoding: false });
+  expect(color.width).toEqual(33);
+});
+
+it('rejects a missing quantization table with a DQT error', function () {
+  var good = fixture('prog-33x33-dri.jpg');
+  var dqt = findMarkers(good).find(function (m) { return m[0] === 0xDB; });
+  var broken = Buffer.from(good);
+  // Rewrite the first DQT segment length to 2, i.e. declare zero tables.
+  broken.writeUInt16BE(2, dqt[1] + 2);
+  expectStructuralError(broken, 'DQT');
+});
+
+it('rejects an out-of-range Huffman selector with an SOS error', function () {
+  var good = fixture('prog-33x33-dri.jpg');
+  var sos = findMarkers(good).find(function (m) { return m[0] === 0xDA; });
+  var broken = Buffer.from(good);
+  // First scan component's Td/Ta byte: select AC table 15, which never exists.
+  broken[sos[1] + 4 + 1 + 1] = 0x0F;
+  expectStructuralError(broken, 'SOS');
+});
+
+it('rejects a scan header with zero components with an SOS error', function () {
+  var good = fixture('prog-33x33-dri.jpg');
+  var sos = findMarkers(good).find(function (m) { return m[0] === 0xDA; });
+  var broken = Buffer.from(good);
+  broken[sos[1] + 4] = 0;
+  expectStructuralError(broken, 'SOS');
+});
+
+it('rejects a malformed Huffman table with a DHT error', function () {
+  var good = fixture('prog-33x33-dri.jpg');
+  var dht = findMarkers(good).find(function (m) { return m[0] === 0xC4; });
+  var broken = Buffer.from(good);
+  broken[dht[1] + 4] = 0x20; // table class 2 is reserved
+  expectStructuralError(broken, 'DHT');
+});
+
+it('rejects an unsupported frame precision with an SOF error', function () {
+  var good = fixture('prog-33x33-dri.jpg');
+  var sof = findMarkers(good).find(function (m) { return m[0] === 0xC2; });
+  var broken = Buffer.from(good);
+  broken[sof[1] + 4] = 12;
+  expectStructuralError(broken, 'SOF');
+});
+
+it('rejects truncated streams with plain Errors, never TypeErrors', function () {
+  var good = fixture('prog-33x33-dri.jpg');
+  [4, 50, 200, good.length - 10].forEach(function (cut) {
+    var threw = false;
+    try {
+      jpeg.decode(good.subarray(0, cut), { useTArray: true });
+    } catch (err) {
+      threw = true;
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TypeError);
+    }
+    expect(threw).toBe(true);
+  });
+});
